@@ -1,0 +1,454 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Sticky Notes v6 (Accessible, Select-formatting, TXT import)</title>
+<style>
+  :root{
+    --bg:#f3f4f6;
+    --panel:#ffffff;
+    --muted:#6b7280;
+    --accent:#0ea5a4;
+    --shadow: 0 10px 30px rgba(2,6,23,.08);
+    --note-yellow:#fff8d6;
+    --note-pink:#fff0f3;
+    --note-blue:#e8f0ff;
+    --note-green:#eafaf1;
+    --note-purple:#f3edff;
+    --text:#000000;
+    --ctrl:#0b1220;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;background:linear-gradient(180deg,#eef2f7 0%,#f8fafc 100%);color:var(--ctrl);-webkit-font-smoothing:antialiased}
+  header{position:fixed;left:16px;right:16px;top:16px;background:var(--panel);border-radius:12px;padding:12px 14px;display:flex;gap:12px;align-items:center;box-shadow:var(--shadow);z-index:1000;border:1px solid #e6e9ee}
+  .brand{font-weight:700;font-size:16px}
+  .controls{display:flex;gap:8px;align-items:center;margin-left:auto}
+  button,select,input[type="text"]{border:1px solid #e0e6ef;background:white;padding:8px 10px;border-radius:8px;font-size:13px;color:var(--ctrl);cursor:pointer}
+  button:focus,select:focus,input:focus{outline:3px solid rgba(14,165,164,.16);outline-offset:2px}
+  #board{position:fixed;left:16px;right:16px;top:76px;bottom:16px;overflow:auto;padding:18px}
+  .note{position:absolute;width:300px;min-height:160px;border-radius:12px;box-shadow:var(--shadow);border:1px solid rgba(0,0,0,.06);display:flex;flex-direction:column;background:var(--note-yellow)}
+  .note[data-color="pink"]{background:var(--note-pink)}
+  .note[data-color="blue"]{background:var(--note-blue)}
+  .note[data-color="green"]{background:var(--note-green)}
+  .note[data-color="purple"]{background:var(--note-purple)}
+  .bar{height:46px;display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid rgba(0,0,0,.04);background:linear-gradient(180deg, rgba(0,0,0,0.02), transparent);cursor:grab}
+  .bar:active{cursor:grabbing}
+  .title{flex:1;font-weight:700;font-size:14px;color:var(--text);padding-left:6px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;outline:none}
+  .actions{display:flex;gap:6px;align-items:center}
+  .btn{background:transparent;border:none;padding:6px;border-radius:8px;cursor:pointer}
+  .btn:focus{outline:3px solid rgba(59,130,246,.14)}
+  .format-bar{display:flex;gap:8px;align-items:center;padding:8px 10px;border-top:1px dashed rgba(0,0,0,.03);background:transparent;flex-wrap:wrap}
+  select.font,select.size{padding:6px 8px;border-radius:8px;border:1px solid rgba(0,0,0,.06);background:white}
+  .toggle{padding:6px;border-radius:6px;border:1px solid rgba(0,0,0,.06);cursor:pointer;background:transparent}
+  .toggle.active{background:rgba(0,0,0,.06)}
+  .content{padding:12px;font-size:14px;line-height:1.45;color:var(--text);flex:1;overflow:auto;background:transparent;outline:none;min-height:70px}
+  .resize{position:absolute;right:10px;bottom:10px;width:18px;height:18px;border-right:2px solid rgba(0,0,0,.12);border-bottom:2px solid rgba(0,0,0,.12);cursor:nwse-resize}
+  .palette{display:flex;gap:6px;align-items:center}
+  .sw{width:20px;height:20px;border-radius:6px;border:1px solid rgba(0,0,0,.08);cursor:pointer}
+  .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+  .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:18px;background:#0b1220;color:white;padding:8px 12px;border-radius:8px;box-shadow:var(--shadow);opacity:0;transition:opacity .2s}
+  .toast.show{opacity:1}
+  @media (max-width:720px){header{flex-wrap:wrap}}
+</style>
+</head>
+<body>
+<header role="banner" aria-label="Sticky notes controls">
+  <div class="brand">Sticky Notes v6</div>
+  <div class="controls" role="toolbar" aria-label="Global controls">
+    <button id="newBtn" aria-label="Add note">➕ New</button>
+    <button id="exportBtn" aria-label="Export notes as JSON">⬇ Export</button>
+    <input id="importFile" type="file" accept=".json,.txt,text/plain,application/json" class="sr-only" multiple />
+    <button id="importBtn" aria-label="Import notes (.txt or .json)">⬆ Import</button>
+    <button id="clearBtn" aria-label="Clear all notes">🗑 Clear</button>
+    <input id="search" type="text" placeholder="Search notes…" aria-label="Search notes" />
+  </div>
+</header>
+
+<main id="board" role="application" aria-label="Notes board"></main>
+
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+<script>
+(() => {
+  const STORAGE_KEY = 'sticky_notes_final_v1';
+  const board = document.getElementById('board');
+  const newBtn = document.getElementById('newBtn');
+  const exportBtn = document.getElementById('exportBtn');
+  const importBtn = document.getElementById('importBtn');
+  const importFile = document.getElementById('importFile');
+  const clearBtn = document.getElementById('clearBtn');
+  const searchInput = document.getElementById('search');
+  const toast = document.getElementById('toast');
+
+  let notes = loadNotes();
+  let zCounter = 1;
+
+  /* ---------- helpers ---------- */
+  function uid(){ return 'n' + Math.random().toString(36).slice(2,10); }
+  function saveNotes(){ localStorage.setItem(STORAGE_KEY, JSON.stringify(notes)); }
+  function loadNotes(){ try { const raw = localStorage.getItem(STORAGE_KEY); if(!raw) return []; const p = JSON.parse(raw); return Array.isArray(p) ? p : []; } catch(e){ console.warn('load error', e); return []; } }
+  function showToast(msg, ms=1000){ toast.textContent = msg; toast.classList.add('show'); setTimeout(()=>toast.classList.remove('show'), ms); }
+  function sanitizeFilename(s){ return (s||'note').replace(/[^\w\-_. ]+/g,'').replace(/\s+/g,'_').slice(0,60); }
+  function escapeHtml(s){ if(!s) return ''; return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+  /* ---------- create note element (no global listeners added repeatedly) ---------- */
+  function createNoteElement(note) {
+    const el = document.createElement('article');
+    el.className = 'note';
+    el.setAttribute('role','group');
+    el.setAttribute('aria-label','Sticky note');
+    el.dataset.id = note.id;
+    el.dataset.color = note.color || 'yellow';
+    el.style.left = (note.x || 40) + 'px';
+    el.style.top = (note.y || 40) + 'px';
+    el.style.width = (note.w || 300) + 'px';
+    el.style.height = (note.h || 180) + 'px';
+    el.style.zIndex = (note.z || ++zCounter);
+
+    el.innerHTML = `
+      <div class="bar" tabindex="0">
+        <div class="title" contenteditable="true" aria-label="Note title">${escapeHtml(note.title || 'Untitled')}</div>
+        <div class="actions" role="toolbar" aria-label="Note actions"></div>
+      </div>
+      <div class="format-bar" aria-label="Formatting controls"></div>
+      <div class="content" contenteditable="true" aria-label="Note content">${escapeHtml(note.text || '')}</div>
+      <div class="resize" aria-hidden="true"></div>
+    `;
+
+    const titleEl = el.querySelector('.title');
+    const actionsEl = el.querySelector('.actions');
+    const formatBar = el.querySelector('.format-bar');
+    const contentEl = el.querySelector('.content');
+    const resizeEl = el.querySelector('.resize');
+
+    // keep element-specific state
+    // Bring to front
+    el.addEventListener('mousedown', () => { el.style.zIndex = ++zCounter; note.z = zCounter; saveNotes(); });
+
+    // Action buttons
+    const buttons = [
+      {lbl:'🎨', title:'Color palette', fn: ()=>{ focusFirstPaletteSwatch(formatBar); }},
+      {lbl:'B', title:'Bold (selection)', fn: ()=>{ execSelectionCommand('bold', contentEl); }},
+      {lbl:'I', title:'Italic (selection)', fn: ()=>{ execSelectionCommand('italic', contentEl); }},
+      {lbl:'U', title:'Underline (selection)', fn: ()=>{ execSelectionCommand('underline', contentEl); }},
+      {lbl:'T', title:'Download .txt', fn: ()=>{ downloadTxt(note, contentEl); }},
+      {lbl:'💾', title:'Save note', fn: ()=>{ note.title = titleEl.innerText.trim(); note.text = contentEl.innerText.trim(); saveNotes(); showToast('Saved'); }},
+      {lbl:'⧉', title:'Duplicate', fn: ()=>{ duplicateNote(note); }},
+      {lbl:'✕', title:'Delete', fn: ()=>{ deleteNote(note, el); }},
+      {lbl:'⤢', title:'Toggle expand', fn: ()=>{ toggleExpand(note, el); }},
+    ];
+    buttons.forEach(b=>{
+      const btn = document.createElement('button'); btn.className='btn'; btn.title=b.title; btn.innerHTML=b.lbl;
+      btn.addEventListener('click', (e)=>{ e.stopPropagation(); b.fn(); });
+      actionsEl.appendChild(btn);
+    });
+
+    // Format bar: color swatches
+    const palette = document.createElement('div'); palette.className = 'palette';
+    ['yellow','pink','blue','green','purple'].forEach(c=>{
+      const sw = document.createElement('div'); sw.className='sw'; sw.dataset.c=c;
+      const fallback = {yellow:'#fff8d6',pink:'#fff0f3',blue:'#e8f0ff',green:'#eafaf1',purple:'#f3edff'}[c];
+      sw.style.background = getComputedStyle(document.documentElement).getPropertyValue('--note-'+c) || fallback;
+      sw.title = 'Color ' + c;
+      sw.tabIndex = 0;
+      sw.addEventListener('click', (ev)=>{ ev.stopPropagation(); el.dataset.color = c; note.color = c; saveNotes(); });
+      palette.appendChild(sw);
+    });
+    formatBar.appendChild(palette);
+
+    // font family selector (applies to selection)
+    const fontSel = document.createElement('select'); fontSel.className='font';
+    [['System','system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial'],['Arial','Arial,Helvetica,sans-serif'],['Georgia','Georgia,serif'],['Mono','"Courier New",monospace']].forEach(f=>{
+      const o=document.createElement('option'); o.value=f[1]; o.textContent=f[0]; fontSel.appendChild(o);
+    });
+    fontSel.value = note.fontFamily || fontSel.options[0].value;
+    fontSel.addEventListener('change', (e)=>{ execSelectionCommand('fontName', contentEl, fontSel.value); note.fontFamily = fontSel.value; saveNotes(); });
+    formatBar.appendChild(fontSel);
+
+    // font size selector (applies to selection via execCommand mapping)
+    const sizeSel = document.createElement('select'); sizeSel.className='size';
+    [12,13,14,16,18,20,24].forEach(s=>{ const o=document.createElement('option'); o.value=s; o.textContent=s+'px'; sizeSel.appendChild(o); });
+    sizeSel.value = note.fontSize || 14;
+    sizeSel.addEventListener('change', ()=>{ applyFontSizeToSelection(contentEl, parseInt(sizeSel.value,10)); note.fontSize = parseInt(sizeSel.value,10); saveNotes(); });
+    formatBar.appendChild(sizeSel);
+
+    // selection toggles use execCommand (works for inline selection)
+    // initial content/format sync (note-level)
+    applyNoteFormatting(note, titleEl, contentEl);
+
+    // updates to note when text/title changes
+    titleEl.addEventListener('input', ()=>{ note.title = titleEl.innerText.trim(); saveNotes(); });
+    contentEl.addEventListener('input', ()=>{ note.text = contentEl.innerText.trim(); saveNotes(); });
+
+    /* ----- dragging using pointer events (per-element, capture & clean-up) ----- */
+    function onBarPointerDown(e){
+      if (e.target.closest('button') || e.target.closest('select')) return;
+      el.setPointerCapture(e.pointerId);
+      const startX = e.clientX, startY = e.clientY;
+      const startLeft = parseFloat(el.style.left), startTop = parseFloat(el.style.top);
+      function onMove(ev){
+        const dx = ev.clientX - startX, dy = ev.clientY - startY;
+        el.style.left = (startLeft + dx) + 'px';
+        el.style.top  = (startTop  + dy) + 'px';
+      }
+      function onUp(ev){
+        try { el.releasePointerCapture(e.pointerId); } catch(_) {}
+        document.removeEventListener('pointermove', onMove);
+        document.removeEventListener('pointerup', onUp);
+        note.x = parseFloat(el.style.left); note.y = parseFloat(el.style.top); saveNotes();
+      }
+      document.addEventListener('pointermove', onMove);
+      document.addEventListener('pointerup', onUp);
+    }
+    const barEl = el.querySelector('.bar');
+    barEl.addEventListener('pointerdown', onBarPointerDown);
+
+    /* ----- resize using pointer events ----- */
+    function onResizePointerDown(e){
+      e.stopPropagation();
+      el.setPointerCapture(e.pointerId);
+      const startX = e.clientX, startY = e.clientY;
+      const startW = parseFloat(el.style.width), startH = parseFloat(el.style.height);
+      function onMove(ev){
+        const dx = ev.clientX - startX, dy = ev.clientY - startY;
+        el.style.width = Math.max(200, startW + dx) + 'px';
+        el.style.height = Math.max(120, startH + dy) + 'px';
+      }
+      function onUp(ev){
+        try { el.releasePointerCapture(e.pointerId); } catch(_) {}
+        document.removeEventListener('pointermove', onMove);
+        document.removeEventListener('pointerup', onUp);
+        note.w = parseFloat(el.style.width); note.h = parseFloat(el.style.height); saveNotes();
+      }
+      document.addEventListener('pointermove', onMove);
+      document.addEventListener('pointerup', onUp);
+    }
+    resizeEl.addEventListener('pointerdown', onResizePointerDown);
+
+    return el;
+  }
+
+  /* ---------- selection-format helpers (execCommand wrapper & font-size logic) ---------- */
+  function execSelectionCommand(cmd, containerEl, value){
+    // ensure selection is inside containerEl
+    containerEl.focus();
+    try { document.execCommand(cmd, false, value); } catch(e){ console.warn('execCommand failed', cmd, e); }
+    // update note data (we save on input events)
+  }
+  function applyFontSizeToSelection(containerEl, px){
+    // execCommand('fontSize') uses 1-7; mapping: 12->2, 13->3, 14->3, 16->4, 18->5, 20->6, 24->7
+    const map = {12:2,13:3,14:3,16:4,18:5,20:6,24:7};
+    const v = map[px] || 3;
+    containerEl.focus();
+    try {
+      document.execCommand('fontSize', false, String(v));
+      // The fontSize execCommand wraps in <font size="X"> which browsers render; to convert to px we'd need to post-process.
+    } catch(e){ console.warn(e); }
+  }
+
+  /* ---------- note-level helpers ---------- */
+  function applyNoteFormatting(note, titleEl, contentEl){
+    const fam = note.fontFamily || 'system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial';
+    const size = (note.fontSize || 14) + 'px';
+    titleEl.style.fontFamily = fam;
+    titleEl.style.fontSize = Math.max(13,(note.fontSize||14)+1) + 'px';
+    titleEl.style.color = '#000';
+    contentEl.style.fontFamily = fam;
+    contentEl.style.fontSize = size;
+    contentEl.style.color = '#000';
+    contentEl.style.fontWeight = note.bold ? '700' : '400';
+    contentEl.style.fontStyle = note.italic ? 'italic' : 'normal';
+    contentEl.style.textDecoration = note.underline ? 'underline' : 'none';
+  }
+
+  function duplicateNote(note){
+    const copy = JSON.parse(JSON.stringify(note));
+    copy.id = uid();
+    copy.x = (note.x || 40) + 30;
+    copy.y = (note.y || 40) + 30;
+    copy.z = ++zCounter;
+    notes.push(copy);
+    saveNotes();
+    render();
+    showToast('Duplicated');
+  }
+  function deleteNote(note, el){
+    if(!confirm('Delete this note?')) return;
+    notes = notes.filter(n => n.id !== note.id);
+    saveNotes();
+    el.remove();
+    showToast('Deleted');
+  }
+  function downloadTxt(note, contentEl){
+    const text = (note.title ? note.title + "\n\n" : "") + contentEl.innerText;
+    const blob = new Blob([text], {type:'text/plain;charset=utf-8'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = sanitizeFilename(note.title || 'note') + '.txt';
+    a.click();
+    URL.revokeObjectURL(a.href);
+    showToast('.txt downloaded');
+  }
+
+  /* ---------- expand toggle (maximize/minimize) ---------- */
+  function toggleExpand(note, el){
+    const isExpanded = el.dataset.expanded === '1';
+    if(isExpanded){
+      // restore
+      el.style.width = (note.w || 300) + 'px';
+      el.style.height = (note.h || 180) + 'px';
+      el.dataset.expanded = '0';
+      showToast('Restored size');
+    } else {
+      // expand to 80% of board visible area
+      const rect = board.getBoundingClientRect();
+      el.style.width = Math.max(400, Math.floor(rect.width * 0.8)) + 'px';
+      el.style.height = Math.max(240, Math.floor(rect.height * 0.8)) + 'px';
+      el.dataset.expanded = '1';
+      showToast('Expanded');
+    }
+    // update note dims for persist if not expanded
+    note.w = parseFloat(el.style.width); note.h = parseFloat(el.style.height);
+    saveNotes();
+  }
+
+  /* ---------- render/CRUD ---------- */
+  function render(){
+    board.innerHTML = '';
+    notes.forEach(n => { if(n.z) zCounter = Math.max(zCounter, n.z); });
+    notes.forEach(note => {
+      const el = createNoteElement(note);
+      board.appendChild(el);
+    });
+  }
+
+  function createNewNote(atX=80, atY=80){
+    const note = {
+      id: uid(),
+      title: 'Untitled',
+      text: '',
+      x: atX, y: atY,
+      w: 300, h: 180,
+      color: 'yellow',
+      fontFamily: 'system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial',
+      fontSize: 14,
+      bold: false, italic: false, underline: false,
+      z: ++zCounter
+    };
+    notes.push(note);
+    saveNotes();
+    render();
+    showToast('New note created');
+  }
+
+  /* ---------- export / import ---------- */
+  exportBtn.addEventListener('click', ()=> {
+    const blob = new Blob([JSON.stringify(notes, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'sticky-notes-backup.json';
+    a.click();
+    URL.revokeObjectURL(a.href);
+    showToast('Exported JSON');
+  });
+
+  importBtn.addEventListener('click', ()=> importFile.click());
+  importFile.addEventListener('change', async (ev)=>{
+    const files = Array.from(ev.target.files || []);
+    if(files.length === 0) return;
+    let created = 0, merged = 0;
+    for(const f of files){
+      const name = f.name || 'file';
+      const isJson = name.toLowerCase().endsWith('.json') || f.type === 'application/json';
+      try {
+        const txt = await f.text();
+        if(isJson){
+          // attempt parse; if array, merge; if object, wrap
+          const parsed = JSON.parse(txt);
+          if(Array.isArray(parsed)){
+            // map and append (but ensure ids)
+            parsed.forEach(p => { p.id = p.id || uid(); notes.push(p); });
+            merged++;
+          } else if(typeof parsed === 'object'){
+            parsed.id = parsed.id || uid();
+            notes.push(parsed);
+            merged++;
+          }
+        } else {
+          // treat as text - create one note with content
+          const content = txt || '';
+          const title = name.replace(/\.[^.]+$/, '');
+          const note = {
+            id: uid(),
+            title: title,
+            text: content,
+            x: 60 + (notes.length * 18) % 300,
+            y: 80 + (notes.length * 12) % 200,
+            w: 420, h: 260,
+            color: 'yellow',
+            fontFamily: 'system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial',
+            fontSize: 14,
+            bold: false, italic: false, underline: false,
+            z: ++zCounter
+          };
+          notes.push(note);
+          created++;
+        }
+      } catch(err){
+        console.warn('import error', err);
+        alert('Failed to import file: ' + name + '\n' + (err.message || err));
+      }
+    }
+    saveNotes();
+    render();
+    ev.target.value = '';
+    showToast((created ? created + ' note(s) from text' : '') + (merged ? ' ' + merged + ' JSON item(s) merged' : ''));
+  });
+
+  /* ---------- other UI ---------- */
+  newBtn.addEventListener('click', ()=> createNewNote(80 + (notes.length*18)%240, 80 + (notes.length*12)%200));
+  clearBtn.addEventListener('click', ()=> {
+    if(!confirm('Delete ALL notes? This cannot be undone.')) return;
+    notes = [];
+    saveNotes();
+    render();
+    showToast('All cleared');
+  });
+
+  searchInput.addEventListener('input', ()=>{
+    const q = searchInput.value.trim().toLowerCase();
+    [...board.children].forEach(el => {
+      const id = el.dataset.id; const item = notes.find(n => n.id === id);
+      const hay = ((item && ((item.title||'') + ' ' + (item.text||''))) || '').toLowerCase();
+      el.style.opacity = q && !hay.includes(q) ? 0.25 : 1;
+    });
+  });
+
+  // disable double-click creation (explicit requirement)
+  board.addEventListener('dblclick', (e)=> { e.stopPropagation(); /* intentionally empty */ });
+
+  // keyboard shortcuts
+  window.addEventListener('keydown', (e)=>{
+    if((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'n'){ e.preventDefault(); createNewNote(); }
+    if((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f'){ e.preventDefault(); searchInput.focus(); }
+  });
+
+  // seed if empty
+  if(notes.length === 0){
+    notes.push({
+      id: uid(), title: 'Welcome', text: 'This build:\n- Double-click NO longer creates notes\n- Resize by dragging handle\n- New button creates notes\n- Import accepts .txt (creates a note from file) and .json\n- Select text and use B/I/U or font selectors to style selection', x:40, y:40, w:420, h:200, color:'yellow', fontFamily:'system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial', fontSize:14, bold:false, italic:false, underline:false, z: ++zCounter
+    });
+    notes.push({
+      id: uid(), title: 'To-do', text: '• Test drag\n• Test resize\n• Test import .txt / .json\n• Test selection formatting', x:520, y:120, w:360, h:180, color:'green', fontFamily:'Arial,Helvetica,sans-serif', fontSize:14, bold:false, italic:false, underline:false, z: ++zCounter
+    });
+    saveNotes();
+  }
+
+  // initial render
+  render();
+
+})();
+</script>
+</body>
+</html>
